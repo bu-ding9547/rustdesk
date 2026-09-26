@@ -22,8 +22,15 @@ endif()
 
 find_program(BASH NAME bash HINTS ${MSYS_ROOT}/usr/bin REQUIRED NO_CACHE)
 
-if(DEFINED ENV{RUSTDESK_NASM_DIR})
-    vcpkg_add_to_path("$ENV{RUSTDESK_NASM_DIR}")
+# See res/vcpkg/aom/portfile.cmake: prefer the 2.x NASM unpacked at the repo
+# root by build-windows-only.yml, since vcpkg's own tool is 3.x.
+set(RUSTDESK_NASM_DIR "$ENV{RUSTDESK_NASM_DIR}")
+if(NOT RUSTDESK_NASM_DIR)
+    get_filename_component(RUSTDESK_NASM_DIR
+        "${CMAKE_CURRENT_LIST_DIR}/../../../nasm-2.16.03" ABSOLUTE)
+endif()
+if(EXISTS "${RUSTDESK_NASM_DIR}/nasm.exe")
+    vcpkg_add_to_path("${RUSTDESK_NASM_DIR}")
 else()
     vcpkg_find_acquire_program(NASM)
     get_filename_component(NASM_EXE_PATH ${NASM} DIRECTORY)

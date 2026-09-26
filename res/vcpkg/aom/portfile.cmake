@@ -1,8 +1,15 @@
 # NASM is required to build AOM. vcpkg's NASM tool is 3.x, which dropped the
-# multipass optimization aom's cmake still requires, so a caller-provided 2.x
-# install wins when RUSTDESK_NASM_DIR is set (unset keeps upstream behaviour).
-if(DEFINED ENV{RUSTDESK_NASM_DIR})
-    vcpkg_add_to_path("$ENV{RUSTDESK_NASM_DIR}")
+# multipass optimization aom's cmake still requires, so use the 2.x install that
+# build-windows-only.yml unpacks at the repo root when it is present (otherwise
+# keep upstream behaviour). The environment variable is only a fallback because
+# vcpkg does not necessarily propagate it into the portfile.
+set(RUSTDESK_NASM_DIR "$ENV{RUSTDESK_NASM_DIR}")
+if(NOT RUSTDESK_NASM_DIR)
+    get_filename_component(RUSTDESK_NASM_DIR
+        "${CMAKE_CURRENT_LIST_DIR}/../../../nasm-2.16.03" ABSOLUTE)
+endif()
+if(EXISTS "${RUSTDESK_NASM_DIR}/nasm.exe")
+    vcpkg_add_to_path("${RUSTDESK_NASM_DIR}")
 else()
     vcpkg_find_acquire_program(NASM)
     get_filename_component(NASM_EXE_PATH ${NASM} DIRECTORY)
