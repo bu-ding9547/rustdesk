@@ -55,10 +55,59 @@ class ServerProfile {
 }
 
 class ServerProfiles {
+  /// Marker inside the export payload, so an import can tell a whole-list string
+  /// from the legacy single-server one.
+  static const exportMarker = 'rustdesk-servers';
+  static const exportVersion = 1;
+
   /// Reads the saved list; entries that no longer decode are dropped.
   static Future<List<ServerProfile>> load() async {
     final raw = await bind.mainGetOption(key: kServerProfilesOption);
     return decode(raw);
+  }
+
+  /// Encodes every server into one shareable string: pasting it into another
+  /// machine restores the whole list, keys included.
+  static String encodeAll(List<ServerProfile> profiles) {
+    final payload = jsonEncode({
+      'type': exportMarker,
+      'version': exportVersion,
+      'servers': [for (final p in profiles) p.toJson()],
+    });
+    return base64UrlEncode(utf8.encode(payload)).split('').reversed.join();
+  }
+
+  /// Decodes a whole-list string; null when [text] is not one (a legacy
+  /// single-server string, or anything unreadable).
+  static List<ServerProfile>? decodeAll(String? text) {
+    final trimmed = text?.trim() ?? '';
+    if (trimmed.isEmpty) {
+      return null;
+    }
+    // Accept both our reversed form and a plain base64 paste.
+    for (final candidate in {trimmed, trimmed.split('').reversed.join()}) {
+      try {
+        final decoded = utf8.decode(base64Decode(base64.normalize(candidate)));
+        final json = jsonDecode(decoded);
+        if (json is! Map || json['type'] != exportMarker) {
+          continue;
+        }
+        final servers = json['servers'];
+        if (servers is! List) {
+          continue;
+        }
+        final profiles = servers
+            .map(ServerProfile.fromJson)
+            .whereType<ServerProfile>()
+            .toList();
+        if (profiles.isNotEmpty) {
+          return profiles;
+        }
+      } catch (_) {
+        // not this format; try the next candidate
+      }
+    }
+    return null;
   }
 
   static List<ServerProfile> decode(String raw) {
@@ -84,3 +133,21 @@ class ServerProfiles {
       key: kServerProfilesOption,
       value: jsonEncode(profiles.map((e) => e.toJson()).toList()));
 }
+
+/// Paste / copy buttons for the whole list, matching the pair the server dialog
+/// used when it only handled one server.
+List<Widget> serverProfilesImportExportWidgets({
+  required VoidCallback onImport,
+  required VoidCallback onExport,
+}) =>
+    [
+      Tooltip(
+        message: translate('Import server config'),
+        child:
+            IconButton(icon: Icon(Icons.paste, color: Colors.grey), onPressed: onImport),
+      ),
+      Tooltip(
+          message: translate('Export Server Config'),
+          child: IconButton(
+              icon: Icon(Icons.copy, color: Colors.grey), onPressed: onExport)),
+    ];

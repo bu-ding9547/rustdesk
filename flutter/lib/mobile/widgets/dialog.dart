@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/server_profiles.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/common/widgets/toolbar.dart';
@@ -123,6 +124,112 @@ void showServerSettingsWithValue(
       errMsgs.removeAt(i);
       if (profiles.isNotEmpty && !profiles.any((p) => p.primary && p.enabled)) {
         profiles.first.primary = true;
+      }
+    }
+
+    /// The list as currently edited, unsaved, used by export.
+    List<ServerProfile> collectProfiles() => [
+          for (var i = 0; i < profiles.length; i++)
+            ServerProfile(
+              title: titleCtrls[i].text.trim().isEmpty
+                  ? idCtrls[i].text.trim()
+                  : titleCtrls[i].text.trim(),
+              config: ServerConfig(
+                idServer: idCtrls[i].text.trim(),
+                relayServer: relayCtrls[i].text.trim(),
+                apiServer: apiCtrls[i].text.trim(),
+                key: keyCtrls[i].text.trim(),
+              ),
+              enabled: profiles[i].enabled,
+              primary: profiles[i].primary,
+            ),
+        ];
+
+    /// Replaces every card, controllers included; used by import.
+    void replaceProfiles(List<ServerProfile> next) {
+      if (next.isEmpty) {
+        return;
+      }
+      for (final c in [
+        ...titleCtrls,
+        ...idCtrls,
+        ...relayCtrls,
+        ...apiCtrls,
+        ...keyCtrls
+      ]) {
+        c.dispose();
+      }
+      profiles
+        ..clear()
+        ..addAll(next);
+      titleCtrls
+        ..clear()
+        ..addAll([for (final p in next) TextEditingController(text: p.title)]);
+      idCtrls
+        ..clear()
+        ..addAll([
+          for (final p in next) TextEditingController(text: p.config.idServer)
+        ]);
+      relayCtrls
+        ..clear()
+        ..addAll([
+          for (final p in next) TextEditingController(text: p.config.relayServer)
+        ]);
+      apiCtrls
+        ..clear()
+        ..addAll([
+          for (final p in next) TextEditingController(text: p.config.apiServer)
+        ]);
+      keyCtrls
+        ..clear()
+        ..addAll([
+          for (final p in next) TextEditingController(text: p.config.key)
+        ]);
+      errMsgs
+        ..clear()
+        ..addAll([for (final _ in next) ''.obs]);
+      pendingDelete = -1;
+      if (!profiles.any((p) => p.primary && p.enabled)) {
+        profiles.first.primary = true;
+      }
+    }
+
+    void exportAll() {
+      Clipboard.setData(
+          ClipboardData(text: ServerProfiles.encodeAll(collectProfiles())));
+      showToast(translate('Export server configuration successfully'));
+    }
+
+    Future<void> importAll() async {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text ?? '';
+      if (text.trim().isEmpty) {
+        showToast(translate('Clipboard is empty'));
+        return;
+      }
+      final all = ServerProfiles.decodeAll(text);
+      if (all != null) {
+        setState(() {
+          replaceProfiles(all);
+        });
+        showToast(translate('Import server configuration successfully'));
+        return;
+      }
+      // Backwards compatible: a single server exported by an older build.
+      try {
+        final single = ServerConfig.decode(text);
+        if (single.idServer.isEmpty) {
+          showToast(translate('Invalid server configuration'));
+          return;
+        }
+        setState(() {
+          replaceProfiles([
+            ServerProfile(title: single.idServer, config: single, primary: true),
+          ]);
+        });
+        showToast(translate('Import server configuration successfully'));
+      } catch (_) {
+        showToast(translate('Invalid server configuration'));
       }
     }
 
@@ -364,11 +471,10 @@ void showServerSettingsWithValue(
       title: Row(
         children: [
           Expanded(child: Text(translate('ID/Relay Server'))),
-          if (idCtrls.isNotEmpty)
-            ...ServerConfigImportExportWidgets(
-              [idCtrls[0], relayCtrls[0], apiCtrls[0], keyCtrls[0]],
-              [errMsgs[0], errMsgs[0], errMsgs[0]],
-            ),
+          ...serverProfilesImportExportWidgets(
+            onImport: importAll,
+            onExport: exportAll,
+          ),
         ],
       ),
       content: ConstrainedBox(
