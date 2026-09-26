@@ -815,6 +815,9 @@ impl Client {
         debug_assert!(!servers.contains(&rendezvous_server));
         let rtt = start.elapsed();
         log::debug!("TCP connection establishment time used: {:?}", rtt);
+        // Enabled servers left to ask when this one does not know the peer. The loop below
+        // consumes `servers` for its TCP-error fallback, so keep our own copy.
+        let mut remaining_servers = servers.clone();
         if socket.is_err() && !servers.is_empty() {
             log::info!("try the other servers: {:?}", servers);
             for server in servers {
@@ -993,6 +996,35 @@ impl Client {
                         if ph.socket_addr.is_empty() {
                             if !ph.other_failure.is_empty() {
                                 bail!(ph.other_failure);
+                            }
+                            // A peer only has to be registered on one of the enabled servers, so
+                            // ask the next one before reporting it missing. Each server is asked
+                            // with its own key, since servers may be deployed with different ones.
+                            if !remaining_servers.is_empty() {
+                                let next = remaining_servers.remove(0);
+                                log::info!(
+                                    "peer {} is unknown to {}, trying rendezvous server {}",
+                                    peer,
+                                    rendezvous_server,
+                                    next
+                                );
+                                let next_key =
+                                    crate::common::get_key_for_host(true, &next).await;
+                                rendezvous_server = next;
+                                let mut next_socket =
+                                    connect_tcp(&*rendezvous_server, CONNECT_TIMEOUT).await?;
+                                secure_tcp(&mut next_socket, &next_key)
+                                    .await
+                                    .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+                                if let Some(rendezvous_message::Union::PunchHoleRequest(ref mut r)) =
+                                    msg_out.union
+                                {
+                                    r.licence_key = next_key;
+                                }
+                                next_socket.send(&msg_out).await?;
+                                socket = next_socket;
+                                my_addr = socket.local_addr();
+                                continue;
                             }
                             match ph.failure.enum_value() {
                                 Ok(punch_hole_response::Failure::ID_NOT_EXIST) => {

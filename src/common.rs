@@ -790,10 +790,10 @@ pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>, boo
 #[inline]
 #[cfg(any(target_os = "android", target_os = "ios"))]
 fn get_rendezvous_server_(_ms_timeout: u64) -> (String, Vec<String>) {
-    (
-        Config::get_rendezvous_server(),
-        Config::get_rendezvous_servers(),
-    )
+    let servers = get_server_hosts();
+    let mut iter = servers.iter();
+    let first = iter.next().cloned().unwrap_or_default();
+    (first, servers)
 }
 
 #[inline]
@@ -2035,10 +2035,14 @@ pub async fn get_key(sync: bool) -> String {
 }
 
 /// Rendezvous servers to run at the same time: the saved server list when the
-/// user configured one, otherwise the legacy option.
+/// user configured one, otherwise the legacy option. Hosts always carry a port
+/// so callers and the ipc config answers agree on the shape.
 pub fn get_server_hosts() -> Vec<String> {
     if crate::server_profiles::is_configured() {
-        return crate::server_profiles::hosts();
+        return crate::server_profiles::hosts()
+            .into_iter()
+            .map(|host| check_port(host, config::RENDEZVOUS_PORT))
+            .collect();
     }
     Config::get_rendezvous_servers()
 }

@@ -956,13 +956,13 @@ async fn handle(data: Data, stream: &mut Connection) {
                 } else if name == "salt" {
                     value = Some(Config::get_salt());
                 } else if name == "rendezvous_server" {
-                    value = Some(format!(
-                        "{},{}",
-                        Config::get_rendezvous_server(),
-                        Config::get_rendezvous_servers().join(",")
-                    ));
+                    // The effective list, so a client asking for a peer knows every enabled
+                    // server to try instead of only the legacy single one.
+                    let hosts = crate::common::get_server_hosts();
+                    let first = hosts.first().cloned().unwrap_or_default();
+                    value = Some(format!("{},{}", first, hosts.join(",")));
                 } else if name == "rendezvous_servers" {
-                    value = Some(Config::get_rendezvous_servers().join(","));
+                    value = Some(crate::common::get_server_hosts().join(","));
                 } else if name == "fingerprint" {
                     value = if Config::get_key_confirmed() {
                         Some(crate::common::pk_to_fingerprint(Config::get_key_pair().1))
@@ -1859,10 +1859,9 @@ pub async fn get_rendezvous_server(ms_timeout: u64) -> (String, Vec<String>) {
         let b: Vec<String> = urls.map(|x| x.to_owned()).collect();
         (a, b)
     } else {
-        (
-            Config::get_rendezvous_server(),
-            Config::get_rendezvous_servers(),
-        )
+        let hosts = crate::common::get_server_hosts();
+        let first = hosts.first().cloned().unwrap_or_default();
+        (first, hosts)
     }
 }
 
@@ -1938,7 +1937,7 @@ pub async fn get_rendezvous_servers(ms_timeout: u64) -> Vec<String> {
     if let Ok(Some(v)) = get_config_async("rendezvous_servers", ms_timeout).await {
         return v.split(',').map(|x| x.to_owned()).collect();
     }
-    return Config::get_rendezvous_servers();
+    return crate::common::get_server_hosts();
 }
 
 #[inline]
