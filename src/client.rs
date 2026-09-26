@@ -5248,7 +5248,7 @@ async fn hc_connection_(
 
     let host = check_port(&rendezvous_server, RENDEZVOUS_PORT);
     let mut conn = connect_tcp(host.clone(), CONNECT_TIMEOUT).await?;
-    let key = crate::get_key(true).await;
+    let key = crate::common::get_key_for_host(true, &host).await;
     crate::secure_tcp(&mut conn, &key).await?;
     let mut msg_out = RendezvousMessage::new();
     msg_out.set_hc(HealthCheck {

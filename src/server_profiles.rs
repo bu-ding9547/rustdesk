@@ -100,26 +100,26 @@ fn same_host(a: &str, b: &str) -> bool {
     a == b || strip_port(&a) == strip_port(&b)
 }
 
-fn field_in(
-    entries: &[ServerProfile],
-    host: &str,
-    pick: impl Fn(&ServerProfile) -> &str,
-) -> Option<String> {
+/// The enabled entry a host belongs to: either its ID server or its relay.
+fn entry_for_host<'a>(entries: &'a [ServerProfile], host: &str) -> Option<&'a ServerProfile> {
     entries
         .iter()
         .filter(|p| p.enabled && !p.id.is_empty())
-        .find(|p| same_host(&p.id, host) && !pick(p).is_empty())
-        .map(|p| pick(p).to_owned())
+        .find(|p| same_host(&p.id, host) || (!p.relay.is_empty() && same_host(&p.relay, host)))
 }
 
 /// Key saved for the server `host` belongs to, if that entry has one.
 pub fn key_for_host(host: &str) -> Option<String> {
-    field_in(&all(), host, |p| &p.key)
+    entry_for_host(&all(), host)
+        .map(|p| p.key.clone())
+        .filter(|key| !key.is_empty())
 }
 
 /// Relay saved for the server `host` belongs to, if that entry has one.
 pub fn relay_for_host(host: &str) -> Option<String> {
-    field_in(&all(), host, |p| &p.relay)
+    entry_for_host(&all(), host)
+        .map(|p| p.relay.clone())
+        .filter(|relay| !relay.is_empty())
 }
 
 /// API server of the primary entry, else of the first enabled entry with one.
@@ -171,20 +171,27 @@ mod tests {
     }
 
     #[test]
-    fn field_lookup_matches_only_enabled_entries_of_that_host() {
+    fn a_host_matches_an_entry_by_id_or_by_relay() {
         let entries = [
             profile("a.com", "ak", "", true),
             profile("b.com:21116", "bk", "relay.example:21117", true),
             profile("c.com", "ck", "", false),
         ];
-        assert_eq!(field_in(&entries, "a.com:21116", |p| &p.key).as_deref(), Some("ak"));
-        assert_eq!(field_in(&entries, "B.COM", |p| &p.key).as_deref(), Some("bk"));
         assert_eq!(
-            field_in(&entries, "b.com:21116", |p| &p.relay).as_deref(),
-            Some("relay.example:21117")
+            entry_for_host(&entries, "a.com:21116").map(|p| p.key.as_str()),
+            Some("ak")
         );
-        // Disabled entry: ignored even though the host matches.
-        assert_eq!(field_in(&entries, "c.com", |p| &p.key), None);
-        assert_eq!(field_in(&entries, "d.com", |p| &p.key), None);
+        assert_eq!(
+            entry_for_host(&entries, "B.COM").map(|p| p.key.as_str()),
+            Some("bk")
+        );
+        // reached through that entry's relay host
+        assert_eq!(
+            entry_for_host(&entries, "relay.example").map(|p| p.key.as_str()),
+            Some("bk")
+        );
+        // a disabled entry is ignored even though its host matches
+        assert!(entry_for_host(&entries, "c.com").is_none());
+        assert!(entry_for_host(&entries, "d.com").is_none());
     }
 }
