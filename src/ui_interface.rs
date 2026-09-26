@@ -1526,9 +1526,13 @@ pub async fn change_id_shared_(id: String, old_id: String) -> &'static str {
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    let rendezvous_servers = crate::ipc::get_rendezvous_servers(1_000).await;
+    let rendezvous_servers = if crate::server_profiles::is_configured() {
+        crate::common::get_server_hosts()
+    } else {
+        crate::ipc::get_rendezvous_servers(1_000).await
+    };
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let rendezvous_servers = Config::get_rendezvous_servers();
+    let rendezvous_servers = crate::common::get_server_hosts();
 
     let mut futs = Vec::new();
     let err: Arc<Mutex<&str>> = Default::default();

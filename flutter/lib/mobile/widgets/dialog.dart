@@ -71,49 +71,138 @@ void showServerSettingsWithValue(
     OverlayDialogManager dialogManager,
     void Function(VoidCallback)? upSetState) async {
   var isInProgress = false;
-  final idCtrl = TextEditingController(text: serverConfig.idServer);
-  final relayCtrl = TextEditingController(text: serverConfig.relayServer);
-  final apiCtrl = TextEditingController(text: serverConfig.apiServer);
-  final keyCtrl = TextEditingController(text: serverConfig.key);
-
-  RxString idServerMsg = ''.obs;
-  RxString relayServerMsg = ''.obs;
-  RxString apiServerMsg = ''.obs;
-
-  final controllers = [idCtrl, relayCtrl, apiCtrl, keyCtrl];
-  final errMsgs = [
-    idServerMsg,
-    relayServerMsg,
-    apiServerMsg,
+  final profiles = await ServerProfiles.load();
+  if (profiles.isEmpty) {
+    // Seed from what is configured today so the list is never empty.
+    profiles.add(ServerProfile(
+      title: serverConfig.idServer.isEmpty
+          ? translate('Server')
+          : serverConfig.idServer,
+      config: serverConfig,
+      primary: true,
+    ));
+  } else if (!profiles.any((p) => p.primary && p.enabled)) {
+    profiles.first.primary = true;
+  }
+  final titleCtrls = [
+    for (final p in profiles) TextEditingController(text: p.title)
   ];
-  final profiles = ServerProfiles.load();
-  final nameCtrl = TextEditingController();
-  var addingProfile = false;
-  var pendingDelete = '';
-
-  ServerConfig currentConfig() => ServerConfig(
-      idServer: idCtrl.text.trim(),
-      relayServer: relayCtrl.text.trim(),
-      apiServer: apiCtrl.text.trim(),
-      key: keyCtrl.text.trim());
+  final idCtrls = [
+    for (final p in profiles) TextEditingController(text: p.config.idServer)
+  ];
+  final relayCtrls = [
+    for (final p in profiles) TextEditingController(text: p.config.relayServer)
+  ];
+  final apiCtrls = [
+    for (final p in profiles) TextEditingController(text: p.config.apiServer)
+  ];
+  final keyCtrls = [
+    for (final p in profiles) TextEditingController(text: p.config.key)
+  ];
+  final errMsgs = [for (final _ in profiles) ''.obs];
+  var pendingDelete = -1;
 
   dialogManager.show((setState, close, context) {
+    void insertProfile() {
+      profiles.add(ServerProfile(title: '', config: ServerConfig()));
+      titleCtrls.add(TextEditingController());
+      idCtrls.add(TextEditingController());
+      relayCtrls.add(TextEditingController());
+      apiCtrls.add(TextEditingController());
+      keyCtrls.add(TextEditingController());
+      errMsgs.add(''.obs);
+    }
+
+    void removeProfile(int i) {
+      profiles.removeAt(i);
+      titleCtrls.removeAt(i).dispose();
+      idCtrls.removeAt(i).dispose();
+      relayCtrls.removeAt(i).dispose();
+      apiCtrls.removeAt(i).dispose();
+      keyCtrls.removeAt(i).dispose();
+      errMsgs.removeAt(i);
+      if (profiles.isNotEmpty && !profiles.any((p) => p.primary && p.enabled)) {
+        profiles.first.primary = true;
+      }
+    }
+
     Future<bool> submit() async {
       setState(() {
         isInProgress = true;
       });
-      bool ret = await setServerConfig(
-          null,
-          errMsgs,
-          ServerConfig(
-              idServer: idCtrl.text.trim(),
-              relayServer: relayCtrl.text.trim(),
-              apiServer: apiCtrl.text.trim(),
-              key: keyCtrl.text.trim()));
+      // Drop entries the user left completely empty.
+      for (var i = profiles.length - 1; i >= 0; i--) {
+        if (idCtrls[i].text.trim().isEmpty && titleCtrls[i].text.trim().isEmpty) {
+          removeProfile(i);
+        }
+      }
+      for (var i = 0; i < profiles.length; i++) {
+        errMsgs[i].value = '';
+        profiles[i].title = titleCtrls[i].text.trim().isEmpty
+            ? idCtrls[i].text.trim()
+            : titleCtrls[i].text.trim();
+        profiles[i].config = ServerConfig(
+            idServer: idCtrls[i].text.trim(),
+            relayServer: relayCtrls[i].text.trim(),
+            apiServer: apiCtrls[i].text.trim(),
+            key: keyCtrls[i].text.trim());
+      }
+      if (profiles.isEmpty) {
+        setState(() {
+          isInProgress = false;
+        });
+        return false;
+      }
+      if (!profiles.any((p) => p.primary && p.enabled)) {
+        profiles
+            .firstWhere((p) => p.enabled, orElse: () => profiles.first)
+            .primary = true;
+      }
+      for (var i = 0; i < profiles.length; i++) {
+        final profile = profiles[i];
+        if (!profile.enabled) {
+          continue;
+        }
+        if (profile.config.idServer.isEmpty) {
+          errMsgs[i].value = translate('Invalid server configuration');
+          setState(() {
+            isInProgress = false;
+          });
+          return false;
+        }
+        final api = profile.config.apiServer;
+        if (api.isNotEmpty &&
+            !api.startsWith('http://') &&
+            !api.startsWith('https://')) {
+          errMsgs[i].value =
+              '${translate("API Server")}: ${translate("invalid_http")}';
+          setState(() {
+            isInProgress = false;
+          });
+          return false;
+        }
+        final msg = translate(await bind.mainTestIfValidServer(
+            server: profile.config.idServer, testWithProxy: true));
+        if (msg.isNotEmpty) {
+          errMsgs[i].value = msg;
+          setState(() {
+            isInProgress = false;
+          });
+          return false;
+        }
+      }
+      // Keep the legacy single-server options in step with the primary entry:
+      // the rest of the app still reads them, and this also logs out of an API
+      // server we are leaving.
+      final primary = profiles.firstWhere((p) => p.primary && p.enabled,
+          orElse: () => profiles.firstWhere((p) => p.enabled,
+              orElse: () => profiles.first));
+      await setServerConfig(null, null, primary.config);
+      await ServerProfiles.save(profiles);
       setState(() {
         isInProgress = false;
       });
-      return ret;
+      return true;
     }
 
     Widget buildField(
@@ -151,126 +240,123 @@ void showServerSettingsWithValue(
       ).workaroundFreezeLinuxMint();
     }
 
-    Widget buildSavedServers() {
-      final current = currentConfig();
-      return Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    Widget buildEntry(int i) {
+      final profile = profiles[i];
+      return Container(
+        margin: const EdgeInsets.symmetric(vertical: 4),
+        decoration: BoxDecoration(
+          border: Border.all(color: Theme.of(context).dividerColor),
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: ExpansionTile(
+          key: ValueKey('server-profile-$i'),
+          initiallyExpanded: profiles.length == 1,
+          leading: Tooltip(
+            message: translate('Default'),
+            child: Radio<bool>(
+              value: true,
+              groupValue: profile.primary,
+              onChanged: profile.enabled
+                  ? (v) {
+                      setState(() {
+                        for (final other in profiles) {
+                          other.primary = false;
+                        }
+                        profile.primary = true;
+                      });
+                    }
+                  : null,
+            ),
+          ),
+          title: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: titleCtrls[i],
+            builder: (context, value, child) => Text(
+              value.text.trim().isEmpty
+                  ? translate('Server')
+                  : value.text.trim(),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+          subtitle: ValueListenableBuilder<TextEditingValue>(
+            valueListenable: idCtrls[i],
+            builder: (context, value, child) => Text(
+              value.text.trim(),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(child: Text(translate('Server'))),
-              if (!addingProfile)
-                TextButton.icon(
-                  icon: const Icon(Icons.add, size: 18),
-                  label: Text(translate('Add')),
+              Switch(
+                value: profile.enabled,
+                onChanged: (v) {
+                  setState(() {
+                    profile.enabled = v;
+                    if (!v) {
+                      profile.primary = false;
+                      if (!profiles.any((p) => p.primary && p.enabled)) {
+                        profiles
+                            .firstWhere((p) => p.enabled,
+                                orElse: () => profiles.first)
+                            .primary = true;
+                      }
+                    }
+                  });
+                },
+              ),
+              if (pendingDelete == i)
+                TextButton(
                   onPressed: () {
-                    nameCtrl.text = current.idServer;
                     setState(() {
-                      addingProfile = true;
-                      pendingDelete = '';
+                      removeProfile(i);
+                      pendingDelete = -1;
+                    });
+                  },
+                  child: Text(translate('Confirm Delete'),
+                      style: const TextStyle(color: Colors.red)),
+                )
+              else
+                IconButton(
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  tooltip: translate('Delete'),
+                  onPressed: () {
+                    setState(() {
+                      pendingDelete = i;
                     });
                   },
                 ),
             ],
           ),
-          if (addingProfile)
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: nameCtrl,
-                    autofocus: true,
-                    decoration: InputDecoration(
-                      labelText: translate('Name'),
-                      isDense: true,
-                    ),
-                  ),
-                ),
-                TextButton(
-                  onPressed: () async {
-                    final name = nameCtrl.text.trim();
-                    if (name.isEmpty) {
-                      showToast(translate('Failed'));
-                      return;
-                    }
-                    await ServerProfiles.upsert(
-                        profiles, ServerProfile(name: name, config: current));
-                    setState(() {
-                      addingProfile = false;
-                    });
-                    showToast(translate('Successful'));
-                  },
-                  child: Text(translate('Apply')),
-                ),
-                TextButton(
-                  onPressed: () {
-                    setState(() {
-                      addingProfile = false;
-                    });
-                  },
-                  child: Text(translate('Cancel')),
-                ),
-              ],
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          children: [
+            buildField(translate('Name'), titleCtrls[i], ''),
+            const SizedBox(height: 8),
+            buildField(translate('ID Server'), idCtrls[i], errMsgs[i].value,
+                autofocus: i == 0),
+            const SizedBox(height: 8),
+            if (!isIOS && !isWeb) ...[
+              buildField(translate('Relay Server'), relayCtrls[i], ''),
+              const SizedBox(height: 8),
+            ],
+            buildField(
+              translate('API Server'),
+              apiCtrls[i],
+              '',
+              validator: (v) {
+                if (v != null && v.isNotEmpty) {
+                  if (!(v.startsWith('http://') || v.startsWith("https://"))) {
+                    return translate("invalid_http");
+                  }
+                }
+                return null;
+              },
             ),
-          if (profiles.isNotEmpty)
-            SizedBox(
-              height: (profiles.length * 56.0).clamp(56.0, 168.0).toDouble(),
-              child: ListView.builder(
-                padding: EdgeInsets.zero,
-                itemCount: profiles.length,
-                itemBuilder: (context, index) {
-                  final profile = profiles[index];
-                  final active = profile.matches(current);
-                  return ListTile(
-                    dense: true,
-                    contentPadding: EdgeInsets.zero,
-                    leading: Icon(
-                      active ? Icons.check_circle : Icons.dns_outlined,
-                      size: 20,
-                      color: active ? MyTheme.accent : null,
-                    ),
-                    title: Text(profile.name,
-                        overflow: TextOverflow.ellipsis, maxLines: 1),
-                    subtitle: Text(profile.config.idServer,
-                        overflow: TextOverflow.ellipsis, maxLines: 1),
-                    onTap: () {
-                      setState(() {
-                        idCtrl.text = profile.config.idServer;
-                        relayCtrl.text = profile.config.relayServer;
-                        apiCtrl.text = profile.config.apiServer;
-                        keyCtrl.text = profile.config.key;
-                        idServerMsg.value = '';
-                        relayServerMsg.value = '';
-                        apiServerMsg.value = '';
-                        pendingDelete = '';
-                      });
-                    },
-                    trailing: pendingDelete == profile.name
-                        ? TextButton(
-                            onPressed: () async {
-                              await ServerProfiles.remove(profiles, profile);
-                              setState(() {
-                                pendingDelete = '';
-                              });
-                            },
-                            child: Text(translate('Confirm Delete'),
-                                style: const TextStyle(color: Colors.red)),
-                          )
-                        : IconButton(
-                            icon: const Icon(Icons.delete_outline, size: 18),
-                            tooltip: translate('Delete'),
-                            onPressed: () {
-                              setState(() {
-                                pendingDelete = profile.name;
-                              });
-                            },
-                          ),
-                  );
-                },
-              ),
-            ),
-        ],
+            const SizedBox(height: 8),
+            buildField('Key', keyCtrls[i], ''),
+          ],
+        ),
       );
     }
 
@@ -278,48 +364,45 @@ void showServerSettingsWithValue(
       title: Row(
         children: [
           Expanded(child: Text(translate('ID/Relay Server'))),
-          ...ServerConfigImportExportWidgets(controllers, errMsgs),
+          if (idCtrls.isNotEmpty)
+            ...ServerConfigImportExportWidgets(
+              [idCtrls[0], relayCtrls[0], apiCtrls[0], keyCtrls[0]],
+              [errMsgs[0], errMsgs[0], errMsgs[0]],
+            ),
         ],
       ),
       content: ConstrainedBox(
-        constraints: const BoxConstraints(minWidth: 500),
-        child: Form(
-          child: Obx(() => Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  buildSavedServers(),
-                  const Divider(height: 16),
-                  buildField(translate('ID Server'), idCtrl, idServerMsg.value,
-                      autofocus: true),
-                  SizedBox(height: 8),
-                  if (!isIOS && !isWeb) ...[
-                    buildField(translate('Relay Server'), relayCtrl,
-                        relayServerMsg.value),
-                    SizedBox(height: 8),
-                  ],
-                  buildField(
-                    translate('API Server'),
-                    apiCtrl,
-                    apiServerMsg.value,
-                    validator: (v) {
-                      if (v != null && v.isNotEmpty) {
-                        if (!(v.startsWith('http://') ||
-                            v.startsWith("https://"))) {
-                          return translate("invalid_http");
-                        }
-                      }
-                      return null;
-                    },
-                  ),
-                  SizedBox(height: 8),
-                  buildField('Key', keyCtrl, ''),
-                  if (isInProgress)
-                    Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: LinearProgressIndicator(),
-                    ),
-                ],
-              )),
+        constraints: const BoxConstraints(minWidth: 500, maxHeight: 520),
+        child: SizedBox(
+          width: 520,
+          child: Form(
+            child: SingleChildScrollView(
+              child: Obx(() => Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      for (var i = 0; i < profiles.length; i++) buildEntry(i),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          icon: const Icon(Icons.add, size: 18),
+                          label: Text(translate('Add')),
+                          onPressed: () {
+                            setState(() {
+                              insertProfile();
+                              pendingDelete = -1;
+                            });
+                          },
+                        ),
+                      ),
+                      if (isInProgress)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8),
+                          child: LinearProgressIndicator(),
+                        ),
+                    ],
+                  )),
+            ),
+          ),
         ),
       ),
       actions: [

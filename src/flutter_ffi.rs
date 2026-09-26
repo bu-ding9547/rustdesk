@@ -1045,7 +1045,9 @@ pub fn main_set_option(key: String, value: String) {
     // No need to check if https proxy is used, because this option does not change frequently
     // and restarting mediator is safe even https proxy is not used.
     let is_allow_tls_fallback = key.eq(keys::OPTION_ALLOW_INSECURE_TLS_FALLBACK);
+    let is_server_profiles = key.eq(crate::server_profiles::OPTION_SERVER_PROFILES);
     if is_allow_tls_fallback
+        || is_server_profiles
         || key.eq("custom-rendezvous-server")
         || key.eq(keys::OPTION_ALLOW_WEBSOCKET)
         || key.eq(keys::OPTION_DISABLE_UDP)
@@ -1055,6 +1057,11 @@ pub fn main_set_option(key: String, value: String) {
             hbb_common::tls::reset_tls_cache();
         }
         set_option(key, value.clone());
+        // The saved server list decides which rendezvous servers run, so a change
+        // has to take effect now instead of at the next start.
+        if is_server_profiles {
+            crate::rendezvous_mediator::RendezvousMediator::restart();
+        }
         #[cfg(target_os = "android")]
         crate::rendezvous_mediator::RendezvousMediator::restart();
         #[cfg(any(target_os = "android", target_os = "ios"))]

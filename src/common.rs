@@ -1147,6 +1147,12 @@ fn get_api_server_(api: String, custom: String) -> String {
             return lic.api.clone();
         }
     }
+    if crate::server_profiles::is_configured() {
+        let api = crate::server_profiles::primary_api();
+        if !api.is_empty() {
+            return api;
+        }
+    }
     if !api.is_empty() {
         return api.to_owned();
     }
@@ -2026,6 +2032,24 @@ pub async fn get_key(sync: bool) -> String {
         key = config::RS_PUB_KEY.to_owned();
     }
     key
+}
+
+/// Rendezvous servers to run at the same time: the saved server list when the
+/// user configured one, otherwise the legacy option.
+pub fn get_server_hosts() -> Vec<String> {
+    if crate::server_profiles::is_configured() {
+        return crate::server_profiles::hosts();
+    }
+    Config::get_rendezvous_servers()
+}
+
+/// Key for one rendezvous server: its own entry's key when the user saved one,
+/// otherwise the global one.
+pub async fn get_key_for_host(sync: bool, host: &str) -> String {
+    if let Some(key) = crate::server_profiles::key_for_host(host) {
+        return key;
+    }
+    get_key(sync).await
 }
 
 pub fn pk_to_fingerprint(pk: Vec<u8>) -> String {
