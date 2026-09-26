@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_hbb/common/widgets/server_profiles.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:get/get.dart';
@@ -85,6 +86,16 @@ void showServerSettingsWithValue(
     relayServerMsg,
     apiServerMsg,
   ];
+  final profiles = ServerProfiles.load();
+  final nameCtrl = TextEditingController();
+  var addingProfile = false;
+  var pendingDelete = '';
+
+  ServerConfig currentConfig() => ServerConfig(
+      idServer: idCtrl.text.trim(),
+      relayServer: relayCtrl.text.trim(),
+      apiServer: apiCtrl.text.trim(),
+      key: keyCtrl.text.trim());
 
   dialogManager.show((setState, close, context) {
     Future<bool> submit() async {
@@ -140,6 +151,129 @@ void showServerSettingsWithValue(
       ).workaroundFreezeLinuxMint();
     }
 
+    Widget buildSavedServers() {
+      final current = currentConfig();
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: Text(translate('Server'))),
+              if (!addingProfile)
+                TextButton.icon(
+                  icon: const Icon(Icons.add, size: 18),
+                  label: Text(translate('Add')),
+                  onPressed: () {
+                    nameCtrl.text = current.idServer;
+                    setState(() {
+                      addingProfile = true;
+                      pendingDelete = '';
+                    });
+                  },
+                ),
+            ],
+          ),
+          if (addingProfile)
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: nameCtrl,
+                    autofocus: true,
+                    decoration: InputDecoration(
+                      labelText: translate('Name'),
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final name = nameCtrl.text.trim();
+                    if (name.isEmpty) {
+                      showToast(translate('Failed'));
+                      return;
+                    }
+                    await ServerProfiles.upsert(
+                        profiles, ServerProfile(name: name, config: current));
+                    setState(() {
+                      addingProfile = false;
+                    });
+                    showToast(translate('Successful'));
+                  },
+                  child: Text(translate('Apply')),
+                ),
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      addingProfile = false;
+                    });
+                  },
+                  child: Text(translate('Cancel')),
+                ),
+              ],
+            ),
+          if (profiles.isNotEmpty)
+            SizedBox(
+              height: (profiles.length * 56.0).clamp(56.0, 168.0).toDouble(),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                itemCount: profiles.length,
+                itemBuilder: (context, index) {
+                  final profile = profiles[index];
+                  final active = profile.matches(current);
+                  return ListTile(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    leading: Icon(
+                      active ? Icons.check_circle : Icons.dns_outlined,
+                      size: 20,
+                      color: active ? MyTheme.accent : null,
+                    ),
+                    title: Text(profile.name,
+                        overflow: TextOverflow.ellipsis, maxLines: 1),
+                    subtitle: Text(profile.config.idServer,
+                        overflow: TextOverflow.ellipsis, maxLines: 1),
+                    onTap: () {
+                      setState(() {
+                        idCtrl.text = profile.config.idServer;
+                        relayCtrl.text = profile.config.relayServer;
+                        apiCtrl.text = profile.config.apiServer;
+                        keyCtrl.text = profile.config.key;
+                        idServerMsg.value = '';
+                        relayServerMsg.value = '';
+                        apiServerMsg.value = '';
+                        pendingDelete = '';
+                      });
+                    },
+                    trailing: pendingDelete == profile.name
+                        ? TextButton(
+                            onPressed: () async {
+                              await ServerProfiles.remove(profiles, profile);
+                              setState(() {
+                                pendingDelete = '';
+                              });
+                            },
+                            child: Text(translate('Confirm Delete'),
+                                style: const TextStyle(color: Colors.red)),
+                          )
+                        : IconButton(
+                            icon: const Icon(Icons.delete_outline, size: 18),
+                            tooltip: translate('Delete'),
+                            onPressed: () {
+                              setState(() {
+                                pendingDelete = profile.name;
+                              });
+                            },
+                          ),
+                  );
+                },
+              ),
+            ),
+        ],
+      );
+    }
+
     return CustomAlertDialog(
       title: Row(
         children: [
@@ -153,6 +287,8 @@ void showServerSettingsWithValue(
           child: Obx(() => Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  buildSavedServers(),
+                  const Divider(height: 16),
                   buildField(translate('ID Server'), idCtrl, idServerMsg.value,
                       autofocus: true),
                   SizedBox(height: 8),

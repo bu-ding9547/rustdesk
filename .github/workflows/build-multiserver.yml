@@ -1,0 +1,14 @@
+name: Full build (multi-server)
+
+# Reuses the upstream build workflow verbatim so the first build is as close to
+# upstream as possible; the Windows job uploads its unsigned output and the
+# publish step attaches the packages to a prerelease tag for easy download.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/flutter-build.yml
+    with:
+      upload-artifact: true
+      upload-tag: multiserver

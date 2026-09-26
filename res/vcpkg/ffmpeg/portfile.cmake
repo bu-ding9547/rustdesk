@@ -37,9 +37,13 @@ if(SOURCE_PATH MATCHES " ")
 endif()
 
 if(NOT VCPKG_TARGET_ARCHITECTURE STREQUAL "wasm32")
-    vcpkg_find_acquire_program(NASM)
-    get_filename_component(NASM_EXE_PATH "${NASM}" DIRECTORY)
-    vcpkg_add_to_path("${NASM_EXE_PATH}")
+    if(DEFINED ENV{RUSTDESK_NASM_DIR})
+        vcpkg_add_to_path("$ENV{RUSTDESK_NASM_DIR}")
+    else()
+        vcpkg_find_acquire_program(NASM)
+        get_filename_component(NASM_EXE_PATH "${NASM}" DIRECTORY)
+        vcpkg_add_to_path("${NASM_EXE_PATH}")
+    endif()
 endif()
 
 set(OPTIONS "\

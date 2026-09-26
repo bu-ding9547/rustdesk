@@ -1,0 +1,47 @@
+name: Flutter analyze (fast check)
+
+# Type-checks the Flutter side without a full Rust build: the bridge files are
+# generated first, then only the touched files are analyzed. Used to iterate on
+# the multi-server UI before spending a full Windows build.
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  generate-bridge:
+    uses: ./.github/workflows/bridge.yml
+
+  analyze:
+    needs: [generate-bridge]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          submodules: recursive
+
+      - name: Restore bridge files
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bridge-artifact
+          path: ./
+
+      - name: Install flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: "3.24.5"
+          cache: true
+
+      - name: Pub get
+        working-directory: flutter
+        run: flutter pub get
+
+      - name: Analyze touched files
+        working-directory: flutter
+        # Only real errors (syntax/type) should fail this job; style infos in
+        # these files are pre-existing and not what we are checking.
+        run: |
+          flutter analyze --no-fatal-infos --no-fatal-warnings \
+            lib/common/widgets/server_profiles.dart \
+            lib/mobile/widgets/dialog.dart

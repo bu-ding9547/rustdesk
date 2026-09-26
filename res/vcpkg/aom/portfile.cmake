@@ -1,7 +1,13 @@
-# NASM is required to build AOM
-vcpkg_find_acquire_program(NASM)
-get_filename_component(NASM_EXE_PATH ${NASM} DIRECTORY)
-vcpkg_add_to_path(${NASM_EXE_PATH})
+# NASM is required to build AOM. vcpkg's NASM tool is 3.x, which dropped the
+# multipass optimization aom's cmake still requires, so a caller-provided 2.x
+# install wins when RUSTDESK_NASM_DIR is set (unset keeps upstream behaviour).
+if(DEFINED ENV{RUSTDESK_NASM_DIR})
+    vcpkg_add_to_path("$ENV{RUSTDESK_NASM_DIR}")
+else()
+    vcpkg_find_acquire_program(NASM)
+    get_filename_component(NASM_EXE_PATH ${NASM} DIRECTORY)
+    vcpkg_add_to_path(${NASM_EXE_PATH})
+endif()
 
 # Perl is required to build AOM
 vcpkg_find_acquire_program(PERL)
