@@ -173,7 +173,19 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
     }
 }
 
+/// This fork ships its own upgrade package, so the in-app updater stays off.
+const SELF_UPDATE_ENABLED: bool = false;
+
 fn check_update(manually: bool) -> ResultType<()> {
+    // This is not the upstream build: the published installer would replace it, and
+    // run while the app and the service hold their files it leaves a half-installed
+    // client behind. Upgrades ship as a package instead (rustdesk-server-setup).
+    if !SELF_UPDATE_ENABLED {
+        if manually {
+            log::info!("self-update is disabled in this build; use the upgrade package");
+        }
+        return Ok(());
+    }
     // On macOS, auto-update is handled by check_update_as_root() in the service process.
     // The shared check_update() path is only used for manual update checks from the GUI.
     #[cfg(target_os = "macos")]

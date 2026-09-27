@@ -400,6 +400,9 @@ impl RendezvousMediator {
                 if latency < 0 || latency > 1_000_000 {
                     return;
                 }
+                // The raw sample, before the EMA below hides its jitter: picking a
+                // stable server is the whole point of the route selector.
+                crate::route_selector::note_server_rtt(&host, latency);
                 if ema_latency == 0 {
                     ema_latency = latency;
                 } else {
@@ -457,6 +460,7 @@ impl RendezvousMediator {
                     if timeout || (last_register_sent.is_none() && expired) {
                         if timeout {
                             fails += 1;
+                            crate::route_selector::note_server_loss(&host);
                             if fails >= MAX_FAILS2 {
                                 Config::update_latency(&host, -1);
                                 old_latency = 0;
@@ -619,6 +623,7 @@ impl RendezvousMediator {
                 let latency = last_register_sent
                     .map(|x| x.elapsed().as_micros() as i64)
                     .unwrap_or(0);
+                crate::route_selector::note_server_rtt(&host, latency);
                 Config::update_latency(&host, latency);
                 log::debug!("Latency of {}: {}ms", host, latency as f64 / 1000.);
             };

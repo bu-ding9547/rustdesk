@@ -14,7 +14,7 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
-  VERSION: "1.5.0"
+  VERSION: "1.5.5"
 
 jobs:
   generate-bridge:
@@ -134,6 +134,14 @@ jobs:
           Remove-Item -Path usbmmidd_v2\Win32 -Recurse
           Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
           mv -Force .\usbmmidd_v2 ./rustdesk
+
+      - name: Run the route selection unit tests
+        # Reported in the log but never blocking: this fork ships an unsigned
+        # personal build, and a failing assertion here is information, not a reason
+        # to withhold the package.
+        continue-on-error: true
+        shell: bash
+        run: cargo test --lib route_selector -- --nocapture 2>&1 | tail -40
 
       - name: Download RustDeskTempTopMostWindow artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

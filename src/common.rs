@@ -817,7 +817,7 @@ pub async fn get_nat_type(ms_timeout: u64) -> i32 {
 // used for client to test which server is faster in case stop-servic=Y
 #[tokio::main(flavor = "current_thread")]
 async fn test_rendezvous_server_() {
-    let servers = Config::get_rendezvous_servers();
+    let servers = get_server_hosts();
     if servers.len() <= 1 {
         return;
     }
@@ -833,8 +833,10 @@ async fn test_rendezvous_server_() {
             .is_ok()
             {
                 let elapsed = tm.elapsed().as_micros();
+                crate::route_selector::note_server_rtt(&host, elapsed as i64);
                 Config::update_latency(&host, elapsed as _);
             } else {
+                crate::route_selector::note_server_loss(&host);
                 Config::update_latency(&host, -1);
             }
         }));

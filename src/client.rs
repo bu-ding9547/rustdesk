@@ -476,6 +476,27 @@ impl Client {
                 (check_port(other_server, RENDEZVOUS_PORT), Vec::new(), true)
             }
         };
+        // Ask the server that has proved most stable for this peer first. The route is
+        // chosen once per connection and never changed inside a session.
+        let (rendezvous_server, servers) = if other_server.is_empty() {
+            crate::route_selector::order(
+                peer,
+                rendezvous_server,
+                servers,
+                crate::route_selector::Preference::from_option(),
+            )
+        } else {
+            log::info!(
+                "route order skipped for {}: pinned to server {}",
+                peer,
+                other_server
+            );
+            (rendezvous_server, servers)
+        };
+        // A server validates the key saved for it. With several servers enabled the shared key
+        // follows the primary entry, so a request to any other one is rejected as an invalid key.
+        let key = crate::server_profiles::key_for_host(&rendezvous_server)
+            .unwrap_or_else(|| key.to_owned());
 
         // Same relay gate as the v6 socket below: under any forced relay the v6 punch cannot
         // be used, so probing v6 reachability is wasted work on every such connection.
@@ -811,6 +832,7 @@ impl Client {
         // into_inner() once the stream is adopted into a connection attempt.
         let mut webrtc_offerer = webrtc_offerer.map(OffererGuard::new);
         let mut start = Instant::now();
+        let mut key = key;
         let mut socket = connect_tcp(&*rendezvous_server, CONNECT_TIMEOUT).await;
         debug_assert!(!servers.contains(&rendezvous_server));
         let rtt = start.elapsed();
@@ -820,13 +842,26 @@ impl Client {
         let mut remaining_servers = servers.clone();
         if socket.is_err() && !servers.is_empty() {
             log::info!("try the other servers: {:?}", servers);
+            crate::route_selector::remember(
+                &peer,
+                &rendezvous_server,
+                crate::route_selector::Outcome::Failed,
+            );
             for server in servers {
                 let server = check_port(server, RENDEZVOUS_PORT);
                 socket = connect_tcp(&*server, CONNECT_TIMEOUT).await;
                 if socket.is_ok() {
                     rendezvous_server = server;
+                    // This server is asked with its own key, not the one of the server we failed
+                    // to reach.
+                    key = crate::common::get_key_for_host(true, &rendezvous_server).await;
                     break;
                 }
+                crate::route_selector::remember(
+                    &peer,
+                    &server,
+                    crate::route_selector::Outcome::Failed,
+                );
             }
             crate::refresh_rendezvous_server();
         } else if !contained {
@@ -977,7 +1012,7 @@ impl Client {
             );
             socket.send(&msg_out).await?;
             // below timeout should not bigger than hbbs's connection timeout.
-            let attempt_deadline = Instant::now() + Duration::from_millis((i * 3000) as u64);
+            let mut attempt_deadline = Instant::now() + Duration::from_millis((i * 3000) as u64);
             loop {
                 let remaining = attempt_deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -1002,6 +1037,11 @@ impl Client {
                             // with its own key, since servers may be deployed with different ones.
                             if !remaining_servers.is_empty() {
                                 let next = remaining_servers.remove(0);
+                                crate::route_selector::remember(
+                                    &peer,
+                                    &rendezvous_server,
+                                    crate::route_selector::Outcome::Miss,
+                                );
                                 log::info!(
                                     "peer {} is unknown to {}, trying rendezvous server {}",
                                     peer,
@@ -1011,11 +1051,23 @@ impl Client {
                                 let next_key =
                                     crate::common::get_key_for_host(true, &next).await;
                                 rendezvous_server = next;
+                                // The relay of this server is asked with the same key later on.
+                                key = next_key.clone();
                                 let mut next_socket =
                                     connect_tcp(&*rendezvous_server, CONNECT_TIMEOUT).await?;
-                                secure_tcp(&mut next_socket, &next_key)
-                                    .await
-                                    .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+                                // Secure the new socket exactly as the first one was secured. A
+                                // server whose key exchange is not in effect never answers one, so
+                                // sending it unconditionally would stall here until the read
+                                // timeout instead of falling through to the punch.
+                                if exchanged {
+                                    secure_tcp_required(&mut next_socket, &next_key)
+                                        .await
+                                        .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+                                } else if legacy_secure {
+                                    secure_tcp(&mut next_socket, &next_key)
+                                        .await
+                                        .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
+                                }
                                 if let Some(rendezvous_message::Union::PunchHoleRequest(ref mut r)) =
                                     msg_out.union
                                 {
@@ -1024,10 +1076,19 @@ impl Client {
                                 next_socket.send(&msg_out).await?;
                                 socket = next_socket;
                                 my_addr = socket.local_addr();
+                                // A switched server starts on a fresh window: the tail of the
+                                // attempt that just failed on the previous server is not a fair
+                                // deadline for a server that has never been asked.
+                                attempt_deadline = Instant::now() + Duration::from_millis(3000);
                                 continue;
                             }
                             match ph.failure.enum_value() {
                                 Ok(punch_hole_response::Failure::ID_NOT_EXIST) => {
+                                    crate::route_selector::remember(
+                                        &peer,
+                                        &rendezvous_server,
+                                        crate::route_selector::Outcome::Miss,
+                                    );
                                     bail!("ID does not exist");
                                 }
                                 Ok(punch_hole_response::Failure::OFFLINE) => {
@@ -1067,6 +1128,11 @@ impl Client {
                                 }
                             }
                             log::info!("{} Hole Punched {} = {}", punch_type, peer, peer_addr);
+                            crate::route_selector::remember(
+                                &peer,
+                                &rendezvous_server,
+                                crate::route_selector::Outcome::Found,
+                            );
                             break 'punch_attempts;
                         }
                     }

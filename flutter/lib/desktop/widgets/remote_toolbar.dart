@@ -9,6 +9,8 @@ import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/common/widgets/server_profiles.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -841,6 +843,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       state: widget.state,
       setFullscreen: _setFullscreen,
     ));
+    // Which server the session runs over: automatic, or one picked by hand.
+    toolbarItems.add(_ServerMenu(id: widget.id, ffi: widget.ffi));
     // Do not show keyboard for camera connection type.
     if (widget.ffi.connType == ConnType.defaultConn) {
       toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
@@ -2786,6 +2790,80 @@ class _KeyboardMenu extends StatelessWidget {
           onPressed: () => ffi.inputModel.onMobilePower(),
           ffi: ffi),
     ];
+  }
+}
+
+/// Local option the route selector reads: a server picked here is asked first, an
+/// empty value restores automatic selection.
+const kRouteForcedServerOption = 'route-forced-server';
+
+class _ServerMenu extends StatefulWidget {
+  final String id;
+  final FFI ffi;
+  _ServerMenu({
+    Key? key,
+    required this.id,
+    required this.ffi,
+  }) : super(key: key);
+
+  @override
+  State<_ServerMenu> createState() => _ServerMenuState();
+}
+
+class _ServerMenuState extends State<_ServerMenu> {
+  final serverButtonKey = GlobalKey();
+  List<ServerProfile> _profiles = [];
+  String _chosen = '';
+
+  @override
+  void initState() {
+    super.initState();
+    ServerProfiles.load().then((profiles) {
+      if (!mounted) return;
+      setState(() {
+        _profiles = profiles.where((p) => p.enabled).toList();
+        _chosen = bind.mainGetLocalOption(key: kRouteForcedServerOption);
+      });
+    });
+  }
+
+  /// The name to show for the current choice: the entry's title, or its id when the
+  /// saved list no longer has that entry.
+  String get _chosenLabel {
+    if (_chosen.isEmpty) return 'Auto';
+    for (final profile in _profiles) {
+      if (profile.config.idServer == _chosen) return profile.title;
+    }
+    return _chosen;
+  }
+
+  void _pick(String server) {
+    bind.mainSetLocalOption(key: kRouteForcedServerOption, value: server);
+    setState(() => _chosen = server);
+    // Reconnect so the session really moves onto that server. The window stays open
+    // and the picture resumes after the handshake; forceRelay keeps its default.
+    bind.sessionReconnect(sessionId: widget.ffi.sessionId, forceRelay: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _IconSubmenuButton(
+        tooltip: 'Server: $_chosenLabel',
+        key: serverButtonKey,
+        svg: 'assets/secure_relay.svg',
+        ffi: widget.ffi,
+        color: _ToolbarTheme.blueColor,
+        hoverColor: _ToolbarTheme.hoverBlueColor,
+        menuChildrenGetter: (_) => [
+              MenuButton(
+                  child: Text('Auto'),
+                  ffi: widget.ffi,
+                  onPressed: () => _pick('')),
+              ..._profiles.map((profile) => MenuButton(
+                  child: Text(profile.title),
+                  ffi: widget.ffi,
+                  onPressed: () => _pick(profile.config.idServer))),
+            ]);
   }
 }
 
