@@ -160,8 +160,23 @@ pub fn refresh_options() {
     }
 }
 
+/// Options this build ships switched on. An option nobody has set reads as empty, and
+/// an empty value is taken as "off", so a freshly installed client would show them
+/// unchecked; falling back to "Y" here is the single point every UI read passes through.
+fn fork_option_default(key: &str) -> Option<String> {
+    if key == keys::OPTION_ALLOW_REMOTE_CONFIG_MODIFICATION && Config::get_option(key).is_empty() {
+        // Persist it, so a reader that does not go through this function agrees.
+        Config::set_option(key.to_owned(), "Y".to_owned());
+        return Some("Y".to_owned());
+    }
+    None
+}
+
 #[inline]
 pub fn get_option<T: AsRef<str>>(key: T) -> String {
+    if let Some(value) = fork_option_default(key.as_ref()) {
+        return value;
+    }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let map = OPTIONS.lock().unwrap();
@@ -563,6 +578,17 @@ pub fn set_share_rdp(_enable: bool) {
 
 #[inline]
 pub fn is_installed_lower_version() -> bool {
+    // The card is only useful when an update can be fetched from a source of our own.
+    // With none set, the only offer would be the official installer, which replaces this
+    // build (and, run while the app and service hold their files, half-installs it), so
+    // the card stays hidden.
+    let url = crate::common::SOFTWARE_UPDATE_URL
+        .lock()
+        .map(|url| url.clone())
+        .unwrap_or_default();
+    if url.is_empty() || url.contains("rustdesk.com") {
+        return false;
+    }
     #[cfg(not(windows))]
     return false;
     #[cfg(windows)]

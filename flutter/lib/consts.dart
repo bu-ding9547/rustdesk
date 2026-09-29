@@ -719,3 +719,6 @@ extension WindowsTargetExt on int {
 }
 
 const kCheckSoftwareUpdateFinish = 'check_software_update_finish';
+
+/// Event carrying the newest build our own release page offers (see `src/github_update.rs`).
+const kGithubUpdateAvailable = 'rustdesk_update_available';

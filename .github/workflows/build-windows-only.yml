@@ -7,6 +7,10 @@ name: Build Windows client (multi-server)
 on:
   workflow_dispatch:
 
+permissions:
+  # The client learns about new builds from `releases/latest`, so the build publishes one.
+  contents: write
+
 env:
   SCITER_RUST_VERSION: "1.75"
   LLVM_VERSION: "15.0.6"
@@ -14,7 +18,7 @@ env:
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
-  VERSION: "1.5.0"
+  VERSION: "1.5.12"
 
 jobs:
   generate-bridge:
@@ -135,6 +139,14 @@ jobs:
           Remove-Item -Path "usbmmidd_v2\deviceinstaller64.exe", "usbmmidd_v2\deviceinstaller.exe", "usbmmidd_v2\usbmmidd.bat"
           mv -Force .\usbmmidd_v2 ./rustdesk
 
+      - name: Run the route selection unit tests
+        # Reported in the log but never blocking: this fork ships an unsigned
+        # personal build, and a failing assertion here is information, not a reason
+        # to withhold the package.
+        continue-on-error: true
+        shell: bash
+        run: cargo test --lib route_selector -- --nocapture 2>&1 | tail -40
+
       - name: Download RustDeskTempTopMostWindow artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -156,10 +168,51 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86_64.exe
+          # The file name is the switch: libs/portable runs the extracted app with
+          # `--install` only when the name ends with install.exe, and that install path
+          # takes its target directory from the registry's InstallLocation - so an existing
+          # install is upgraded in place instead of a second copy in Program Files.
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-x86_64-install.exe
+
+      - name: Build the file hash manifest
+        # What the client compares the installed files against after the installer has run.
+        shell: pwsh
+        run: |
+          $root = (Resolve-Path rustdesk).Path
+          $lines = Get-ChildItem rustdesk -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object {
+              $rel = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+              "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $rel
+            }
+          $lines | Set-Content -Encoding ascii "rustdesk-${{ env.VERSION }}-files.sha256"
+          Write-Host "manifest lines: $($lines.Count)"
+          Get-Content "rustdesk-${{ env.VERSION }}-files.sha256" -TotalCount 3
 
       - name: Upload installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-installer-windows-x86_64
           path: ./SignOutput
+
+      - name: Publish the release
+        # This is the update source the client reads: it asks for `releases/latest`, takes
+        # the tag as the newest version and takes the installer, the hash manifest and the
+        # unsigned package from there. The tag is the version, so rebuilding the same version
+        # replaces that one release instead of leaving two of them. (PowerShell, not `zip`:
+        # the Windows runner has no zip binary.)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "v${{ env.VERSION }}"
+          gh release delete $tag --yes --cleanup-tag 2>$null
+          Compress-Archive -Path rustdesk/* -DestinationPath "rustdesk-unsigned-${{ env.VERSION }}.zip" -Force
+          gh release create $tag `
+            "SignOutput/rustdesk-${{ env.VERSION }}-x86_64-install.exe" `
+            "rustdesk-${{ env.VERSION }}-files.sha256" `
+            "rustdesk-unsigned-${{ env.VERSION }}.zip" `
+            "flutter/assets/upgrade-one-click.ps1" `
+            --title "RustDesk ${{ env.VERSION }} (multi-server)" `
+            --notes "automated build of ${{ github.sha }}"
+          gh release view $tag --json tagName,assets --jq '.tagName, (.assets[].name)'

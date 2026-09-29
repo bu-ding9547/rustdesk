@@ -358,6 +358,39 @@ pub fn session_reconnect(session_id: SessionID, force_relay: bool) {
     session_on_waiting_for_image_dialog_show(session_id);
 }
 
+/// Asks a server whether it has this peer, so the route menu only gives up a working
+/// session for a server that can carry one. The answer goes out as the
+/// `route_probe_result` event, broadcast the way theme changes are: a session event would
+/// only reach that session's own listener and never the registered event handlers, which
+/// is where the menu is listening.
+pub fn session_probe_server(session_id: SessionID, peer_id: String, server: String, key: String) {
+    std::thread::spawn(move || {
+        let result = crate::route_probe::probe(&peer_id, &server, &key);
+        log::info!(
+            "probe {} on {} for session {}: {} ({})",
+            peer_id,
+            server,
+            session_id,
+            if result.online { "known" } else { "not usable" },
+            result.detail
+        );
+        let event = serde_json::ser::to_string(&HashMap::from([
+            ("name", "route_probe_result"),
+            ("peer", peer_id.as_str()),
+            ("server", server.as_str()),
+            ("online", if result.online { "1" } else { "0" }),
+            ("code", result.code),
+            ("detail", result.detail.as_str()),
+        ]))
+        .unwrap_or_default();
+        for app in crate::flutter::get_global_event_channels() {
+            // Every window, the main one included: a session can live in its own window or
+            // as a tab of the main window, and the menu that asked is in whichever holds it.
+            let _ = crate::flutter::push_global_event(&app, event.clone());
+        }
+    });
+}
+
 pub fn session_toggle_option(session_id: SessionID, value: String) {
     if let Some(session) = sessions::get_session_by_session_id(&session_id) {
         log::warn!("toggle option {}", &value);
@@ -1795,6 +1828,44 @@ pub fn main_get_last_remote_id() -> String {
 
 pub fn main_get_software_update_url() {
     crate::common::check_software_update();
+}
+
+/// Asks our own release page whether a newer build exists. The answer arrives as the
+/// `rustdesk_update_available` event, which is what puts the upgrade card on the home page.
+pub fn main_github_update_check() {
+    crate::github_update::spawn_check();
+}
+
+/// Starts the in-place upgrade to the newest build. An empty string means it was started -
+/// anything else is the reason it was not, to be shown to the user as it is. The download and
+/// the backup continue in the background; the UI follows `update_progress_json`.
+pub fn main_github_update_start() -> String {
+    match crate::github_update::start_update() {
+        Ok(()) => "".to_owned(),
+        Err(err) => err.to_string(),
+    }
+}
+
+/// The staged upgrade (installer, hash list, versions, backup) as JSON, empty when there is none.
+/// The wizard's first page shows it; it is empty for a plain first-time install.
+pub fn update_pending_info() -> SyncReturn<String> {
+    SyncReturn(crate::github_update::pending_info_json())
+}
+
+/// Progress of the download, the backup, the post-install check and the repair, as JSON.
+/// Polled by the card and the wizard, so it is synchronous on purpose.
+pub fn update_progress_json() -> SyncReturn<String> {
+    SyncReturn(crate::github_update::progress_json())
+}
+
+/// Result of the post-install check, as JSON, empty until one has run.
+pub fn update_report_json() -> SyncReturn<String> {
+    SyncReturn(crate::github_update::report_json())
+}
+
+/// Drops the report once it has been shown, so it does not reappear on every start.
+pub fn update_report_clear() {
+    crate::github_update::clear_report();
 }
 
 pub fn main_get_home_dir() -> String {

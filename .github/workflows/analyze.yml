@@ -43,5 +43,10 @@ jobs:
         # these files are pre-existing and not what we are checking.
         run: |
           flutter analyze --no-fatal-infos --no-fatal-warnings \
+            lib/main.dart \
+            lib/common.dart \
             lib/common/widgets/server_profiles.dart \
-            lib/mobile/widgets/dialog.dart
+            lib/mobile/widgets/dialog.dart \
+            lib/desktop/pages/install_page.dart \
+            lib/desktop/pages/desktop_home_page.dart \
+            lib/desktop/widgets/remote_toolbar.dart

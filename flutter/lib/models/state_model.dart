@@ -27,6 +27,15 @@ class StateGlobal {
 
   final updateUrl = ''.obs;
 
+  /// Newest build our own release page offers, empty when this installation is current.
+  /// Filled from the `rustdesk_update_available` event, which the home page shows as a card.
+  final githubUpdateVersion = ''.obs;
+  final githubUpdateUrl = ''.obs;
+
+  /// What the prepare step is doing right now (downloading the installer, backing the current
+  /// installation up), shown on the upgrade card.
+  final githubUpdateProgress = ''.obs;
+
   String _inputSource = '';
 
   // Track relative mouse mode state for each peer connection.

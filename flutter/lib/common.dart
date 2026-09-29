@@ -4079,6 +4079,49 @@ void checkUpdate() {
         bind.mainGetSoftwareUpdateUrl();
       });
     }
+    // Our own update source: the newest release of the fork. It is deliberately not the
+    // built-in one - that one downloads RustDesk's own self-extracting package, which would
+    // install a second copy instead of upgrading this one. The event is global, so
+    // registering here (once per window) is enough for the home page to see it.
+    platformFFI.registerEventHandler(
+        kGithubUpdateAvailable, kGithubUpdateAvailable,
+        (Map<String, dynamic> evt) async {
+      if (evt['version'] is String) {
+        stateGlobal.githubUpdateVersion.value = evt['version'];
+      }
+      if (evt['url'] is String) {
+        stateGlobal.githubUpdateUrl.value = evt['url'];
+      }
+    });
+    Timer(const Duration(seconds: 2), () async {
+      bind.mainGithubUpdateCheck();
+    });
+    // If this start came right after an in-app upgrade, the post-install check left its result
+    // behind. Show it once, then clear it.
+    Timer(const Duration(seconds: 4), () async {
+      final raw = bind.updateReportJson();
+      if (raw.isEmpty) return;
+      bind.updateReportClear();
+      try {
+        final report = jsonDecode(raw);
+        if (report is! Map) return;
+        final total = (report['total'] as num?)?.toInt() ?? 0;
+        final bad = report['bad'] is List ? (report['bad'] as List).length : 0;
+        final version = '${report['version'] ?? ''}';
+        final repaired = (report['repaired'] as num?)?.toInt() ?? 0;
+        final message = bad == 0
+            ? '升级完成：$version，$total 个文件逐个校验全部一致'
+                '${repaired > 0 ? '（其中 $repaired 个由程序补齐）' : ''}。'
+            : '升级到 $version 完成，但有 $bad/$total 个文件未通过校验，'
+                '下次升级或手动运行一键升级可再次修复。';
+        gFFI.dialogManager.show((setState, close, context) => CustomAlertDialog(
+              title: Text(translate('Status'), style: TextStyle(fontSize: 21)),
+              content: Text(message),
+              actions: [dialogButton('OK', onPressed: close)],
+              onCancel: close,
+            ));
+      } catch (_) {}
+    });
   }
 }
 

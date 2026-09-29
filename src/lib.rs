@@ -22,6 +22,9 @@ pub use self::rendezvous_mediator::*;
 /// cbindgen:ignore
 pub mod common;
 mod server_profiles;
+mod route_selector;
+mod route_probe;
+mod github_update;
 #[cfg(not(any(target_os = "ios")))]
 pub mod ipc;
 #[cfg(not(any(

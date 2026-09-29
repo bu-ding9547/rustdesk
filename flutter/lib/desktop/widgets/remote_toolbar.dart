@@ -9,6 +9,9 @@ import 'package:flutter_hbb/common/widgets/toolbar.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/consts.dart';
+import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/common/widgets/server_profiles.dart';
+import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
@@ -841,6 +844,8 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
       state: widget.state,
       setFullscreen: _setFullscreen,
     ));
+    // Which server the session runs over: automatic, or one picked by hand.
+    toolbarItems.add(_ServerMenu(id: widget.id, ffi: widget.ffi));
     // Do not show keyboard for camera connection type.
     if (widget.ffi.connType == ConnType.defaultConn) {
       toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
@@ -2786,6 +2791,207 @@ class _KeyboardMenu extends StatelessWidget {
           onPressed: () => ffi.inputModel.onMobilePower(),
           ffi: ffi),
     ];
+  }
+}
+
+/// Local option the route selector reads: a server picked here is asked first, an
+/// empty value restores automatic selection.
+const kRouteForcedServerOption = 'route-forced-server';
+
+/// Event the Rust side answers a server check with, see `session_probe_server`.
+const kRouteProbeResultEvent = 'route_probe_result';
+
+class _ServerMenu extends StatefulWidget {
+  final String id;
+  final FFI ffi;
+  _ServerMenu({
+    Key? key,
+    required this.id,
+    required this.ffi,
+  }) : super(key: key);
+
+  @override
+  State<_ServerMenu> createState() => _ServerMenuState();
+}
+
+class _ServerMenuState extends State<_ServerMenu> {
+  final serverButtonKey = GlobalKey();
+  List<ServerProfile> _profiles = [];
+  String _chosen = '';
+
+  /// The server a check is running for right now; empty when none is.
+  String _checking = '';
+
+  String get _handlerName => 'route-probe-${widget.ffi.id}';
+
+  @override
+  void initState() {
+    super.initState();
+    platformFFI.registerEventHandler(
+        kRouteProbeResultEvent, _handlerName, _onProbeResult);
+    ServerProfiles.load().then((profiles) {
+      if (!mounted) return;
+      setState(() {
+        _profiles = profiles.where((p) => p.enabled).toList();
+        _chosen = bind.mainGetLocalOption(key: kRouteForcedServerOption);
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    platformFFI.unregisterEventHandler(kRouteProbeResultEvent, _handlerName);
+    super.dispose();
+  }
+
+  /// The name to show for a server: the entry's title, or its address when the saved
+  /// list no longer has that entry. An empty server is the automatic choice.
+  String _labelOf(String server) {
+    if (server.isEmpty) return 'Auto';
+    for (final profile in _profiles) {
+      if (profile.config.idServer == server) return profile.title;
+    }
+    return server;
+  }
+
+  String _keyOf(String server) {
+    for (final profile in _profiles) {
+      if (profile.config.idServer == server) return profile.config.key;
+    }
+    return '';
+  }
+
+  String get _chosenLabel =>
+      _checking.isEmpty ? _labelOf(_chosen) : '${_labelOf(_checking)} …';
+
+  /// A route is only worth handing the running session over to when the other server can
+  /// actually reach the peer, so the server is asked first: one that knows the peer takes
+  /// the session over, one that does not leaves the session untouched and says why.
+  void _pick(String server) {
+    if (_checking.isNotEmpty) {
+      return;
+    }
+    if (server.isEmpty) {
+      // Automatic needs no check: it picks among the servers that already answered.
+      _handOver(server);
+      return;
+    }
+    setState(() => _checking = server);
+    bind.sessionProbeServer(
+        sessionId: widget.ffi.sessionId,
+        peerId: widget.ffi.id,
+        server: server,
+        key: _keyOf(server));
+  }
+
+  Future<void> _onProbeResult(Map<String, dynamic> evt) async {
+    final server = evt['server']?.toString() ?? '';
+    // The answer is broadcast to every window, so take only this peer's and only for the
+    // pick that is still running here.
+    if (server.isEmpty ||
+        evt['peer']?.toString() != widget.ffi.id ||
+        server != _checking) {
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _checking = '');
+    if (evt['online']?.toString() == '1') {
+      await _handOver(server);
+      return;
+    }
+    _showProbeRefusal(
+        server, evt['code']?.toString() ?? '', evt['detail']?.toString() ?? '');
+  }
+
+  /// Hands this session over to `server` (`''` for automatic).
+  ///
+  /// Switching a *live* session leaves the peer holding the old one: it then ignores every
+  /// new connection until its own timeout (measured: five to six minutes), which also
+  /// blocks a manual reconnect. So the request for the new window goes out first and this
+  /// session is ended at once: the new window needs about a second to come up while the
+  /// old socket closes immediately, so the peer never sees two sessions for the same peer
+  /// at the same time. This session's tab then goes with it, and this window is put away
+  /// the way a taskbar close does it.
+  Future<void> _handOver(String server) async {
+    await bind.mainSetLocalOption(key: kRouteForcedServerOption, value: server);
+    if (mounted) {
+      setState(() => _chosen = server);
+    }
+    final thisWindowId = stateGlobal.windowId;
+    final result =
+        await rustDeskWinManager.newRemoteDesktop(widget.ffi.id, forceRelay: false);
+    await widget.ffi.close(closeSession: true);
+    try {
+      closeConnection(id: widget.ffi.id);
+    } catch (e) {
+      debugPrint('Failed to take this session tab away: $e');
+    }
+    final newWindowId = result.windowId;
+    if (newWindowId == thisWindowId || thisWindowId <= 0) {
+      // The new session opened as a tab of this window, which still has to stay.
+      return;
+    }
+    try {
+      // Hide it and let the main window forget it is active, exactly as `TabBarState
+      // .onWindowClose` does for the taskbar button. Destroying the window instead would
+      // leave its id in the main window's list of remote windows, which hands that id out
+      // again later: every following connect would then try a window that is gone and stop
+      // there (seen in the field: after a switch, connecting to any device did nothing).
+      await WindowController.fromWindowId(thisWindowId).hide();
+      await rustDeskWinManager.call(
+          WindowType.Main, kWindowEventHide, {'id': thisWindowId});
+    } catch (e) {
+      debugPrint('Failed to put the window left behind away: $e');
+    }
+  }
+
+  /// Reports a server the session was not handed to: a session that runs is worth more
+  /// than a switch onto a server that cannot carry it. A server that answered "not here"
+  /// is final; one that could not be asked at all can still be forced by hand.
+  void _showProbeRefusal(String server, String code, String detail) {
+    final label = '${_labelOf(server)} ($server)';
+    final notRegistered = code == 'not_registered';
+    widget.ffi.dialogManager.show((setState, close, context) => CustomAlertDialog(
+          title: Text(
+            translate(notRegistered
+                ? 'That server does not have this device'
+                : 'The server cannot be reached'),
+            style: TextStyle(fontSize: 21),
+          ),
+          content: Text(notRegistered
+              ? '$label\n${translate('ID')}: ${widget.ffi.id}'
+              : '$label\n$detail'),
+          actions: [
+            dialogButton('OK', onPressed: close),
+            if (!notRegistered)
+              dialogButton(translate('Switch anyway'), onPressed: () {
+                close();
+                _handOver(server);
+              }),
+          ],
+          onCancel: close,
+        ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _IconSubmenuButton(
+        tooltip: 'Server: $_chosenLabel',
+        key: serverButtonKey,
+        svg: 'assets/secure_relay.svg',
+        ffi: widget.ffi,
+        color: _ToolbarTheme.blueColor,
+        hoverColor: _ToolbarTheme.hoverBlueColor,
+        menuChildrenGetter: (_) => [
+              MenuButton(
+                  child: Text('Auto'),
+                  ffi: widget.ffi,
+                  onPressed: () => _pick('')),
+              ..._profiles.map((profile) => MenuButton(
+                  child: Text(profile.title),
+                  ffi: widget.ffi,
+                  onPressed: () => _pick(profile.config.idServer))),
+            ]);
   }
 }
 

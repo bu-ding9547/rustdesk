@@ -1768,6 +1768,11 @@ copy /Y \"{tmp_path}\\Uninstall {app_name}.lnk\" \"{path}\\\"
         import_config = get_import_config(&exe),
     );
     run_cmds(cmds, debug, "install")?;
+    // The files are in place, but the UI still runs the old build: check them against the
+    // release's hash list, replace what the installer could not write (a locked .ps1, say),
+    // drop the packer's extraction cache and refresh the registry values. It does nothing
+    // unless this install was started from our own update card.
+    crate::github_update::after_install_files();
     run_after_run_cmds(silent);
     Ok(())
 }

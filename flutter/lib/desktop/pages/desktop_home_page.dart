@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/common/widgets/animated_rotation_widget.dart';
 import 'package:flutter_hbb/common/widgets/custom_password.dart';
+import 'package:flutter_hbb/common/widgets/dialog.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
@@ -427,7 +428,91 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
+  /// Upgrades this installation in place to the build our release page offers: the client
+  /// hands the package URL and its own directory to the bundled script and Windows asks for
+  /// the administrator rights. Nothing else is installed, and the client is reopened on the
+  /// new build, so the UI and the service stay on one version.
+  /// Downloads the installer and backs the current installation up (all in Rust), then lets
+  /// Windows ask for the administrator rights once. The staged build then shows its own wizard,
+  /// which installs in place and checks every file against the release. The card follows the
+  /// progress until the installer takes over.
+  Future<void> startGithubUpdate() async {
+    if (stateGlobal.githubUpdateUrl.value.isEmpty) {
+      showGithubUpdateError('还没有拿到新版本的下载地址，请稍后再试。');
+      return;
+    }
+    final err = await bind.mainGithubUpdateStart();
+    if (!mounted) return;
+    if (err.isNotEmpty) {
+      showGithubUpdateError(err);
+      return;
+    }
+    stateGlobal.githubUpdateProgress.value = '正在准备升级…';
+    pollGithubUpdateProgress();
+  }
+
+  Timer? _githubUpdateTimer;
+
+  /// Polls instead of listening to events: the prepare step reports progress hundreds of times
+  /// while it downloads, and polling keeps the UI in step without a flood of events.
+  void pollGithubUpdateProgress() {
+    _githubUpdateTimer?.cancel();
+    _githubUpdateTimer =
+        Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      final raw = await bind.updateProgressJson();
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      Map? map;
+      try {
+        final decoded = jsonDecode(raw);
+        if (decoded is Map) map = decoded;
+      } catch (_) {}
+      if (map == null) return;
+      final text = '${map['text'] ?? ''}';
+      final done = (map['done'] as num?)?.toInt() ?? 0;
+      final total = (map['total'] as num?)?.toInt() ?? 0;
+      final message = total > 0
+          ? '$text ${(done / 1048576).toStringAsFixed(1)}/'
+              '${(total / 1048576).toStringAsFixed(1)} MB'
+          : text;
+      stateGlobal.githubUpdateProgress.value = message;
+      if (map['finished'] == true) {
+        timer.cancel();
+        stateGlobal.githubUpdateProgress.value = '';
+        final error = '${map['error'] ?? ''}';
+        if (error.isNotEmpty) {
+          showGithubUpdateError(error);
+        }
+      }
+    });
+  }
+
+  void showGithubUpdateError(String message) {
+    gFFI.dialogManager.show((setState, close, context) => CustomAlertDialog(
+          title: Text(translate('Status'), style: TextStyle(fontSize: 21)),
+          content: Text('升级没有开始：$message'),
+          actions: [dialogButton('OK', onPressed: close)],
+          onCancel: close,
+        ));
+  }
+
   Widget buildHelpCards(String updateUrl) {
+    // Our own release page has a newer build: this card is what makes the upgrade one click.
+    // Windows only - the in-place upgrade needs the installer's service and registry work.
+    final newerBuild = isWindows ? stateGlobal.githubUpdateVersion.value : '';
+    if (newerBuild.isNotEmpty && !isCardClosed) {
+      final preparing = stateGlobal.githubUpdateProgress.value;
+      return buildInstallCard(
+          "Status",
+          preparing.isNotEmpty
+              ? "正在准备升级到 $newerBuild：$preparing\n（准备好后会弹一次管理员授权，接着出现安装向导）"
+              : "发现新版本 $newerBuild，点击即可就地升级（只替换当前这份安装，装完自动重开客户端）。",
+          "一键升级",
+          () => startGithubUpdate(),
+          closeButton: true);
+    }
     if (!bind.isCustomClient() &&
         updateUrl.isNotEmpty &&
         !isCardClosed &&
@@ -870,6 +955,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     _uniLinksSubscription?.cancel();
     Get.delete<RxBool>(tag: 'stop-service');
     _updateTimer?.cancel();
+    _githubUpdateTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
